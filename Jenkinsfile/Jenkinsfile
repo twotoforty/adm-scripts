@@ -1,0 +1,48 @@
+DID = "${env.DOCKER_REGISTRY}/maven-dev"
+
+node {
+	//cleanup current user docker credentials
+    sh 'rm  ~/.dockercfg || true'
+    sh 'rm ~/.docker/config.json || true'
+	
+	def mycontainer = docker.image(DID)
+
+	docker.withRegistry("https://${env.DOCKER_REGISTRY}", 'ecr:eu-west-1:1166692b-09fd-446c-b293-32b8a5df1ccd') {
+		mycontainer.pull()
+	}
+	mycontainer.inside('-u root:root -v /var/run/docker.sock:/var/run/docker.sock') {
+
+		stage('checkout') {
+			sh 'rm -rf spring-boot-mysql-example || true'
+			git 'https://github.com/codeurjc/spring-boot-mysql-example.git'
+		}
+		stage('build') {
+		    sh 'mvn -DskipTests=true install compile package'
+		}
+	}
+	stage('build docker image') {
+		def customImage = docker.build("twotoforty:${env.BUILD_ID}")
+	}
+		
+	docker.image('mysql:5.7').withRun('--name mysql -p 3306:3306 -e MYSQL_ROOT_PASSWORD=r00t -e MYSQL_DATABASE=springboot_mysql_example') { c ->
+		docker.image("twotoforty:${env.BUILD_ID}").withRun('--name app -p 8081:8080 -e DB=172.17.0.1') { d ->
+			mycontainer.inside('-u root:root -v /var/run/docker.sock:/var/run/docker.sock') {
+				stage('checking image') {
+					sleep 30
+					RES = sh (
+						script: 'curl --location --output /dev/null --silent --write-out "%{http_code}\\n" 172.17.0.1:8081',
+						returnStdout: true
+					).trim()
+				}
+			}
+		}
+	}
+
+	stage('uploading the image') {
+		if (RES == '200') {
+			 docker.withRegistry("https://${env.DOCKER_REGISTRY}", 'ecr:eu-west-1:1166692b-09fd-446c-b293-32b8a5df1ccd') {
+			 	def customImage = docker.image("twotoforty:${env.BUILD_ID}").push()
+			}
+		}
+	}
+}
